@@ -1,0 +1,102 @@
+[build-system]
+requires = ["flit_core >=3.2,<4", "setuptools"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "matrix"
+readme = "README.md"
+authors = [{name = "Facebook AI Research"}]
+requires-python = ">=3.10"
+dynamic = ["version", "description"]
+
+dependencies = [
+  "submitit>=1.5.2",
+  "psutil",
+  "torch>=2.5.1",
+  "transformers>=4.45.2",
+  "vllm>=v0.6.6.post1",
+  "ray[serve]>=2.40.0",
+  "grpcio==1.70.0",
+  "grpcio-tools==1.70.0",
+  "fire",
+  "jinja2",
+  "pyyaml",
+  "portalocker",
+  "boto3",
+  "google-genai",
+]
+# zip_safe = false
+classifiers=[
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering",
+    "Development Status :: 4 - Beta",
+]
+
+
+[project.urls]
+  Source = "https://github.com/facebookresearch/matrix"
+  Tracker = "https://github.com/facebookresearch/matrix/issues"
+
+
+[project.optional-dependencies]
+  dev = [
+      # Test
+      "pytest>=4.3.0",
+      "coverage[toml]>=5.1",
+      # Format
+      "black==24.10.0",
+      "isort>=5.12.0",
+      "pre-commit",
+      # Linters
+      "mypy>=1.13.0",
+      "pylint>=2.8.0",
+      # Library stubs
+      "types-PyYAML",
+      "types-requests",
+      # Release
+      "flit>=3.5.1"
+  ]
+  vllm_066 = [
+      "vllm==v0.6.6.post1",
+      "ray[serve]==2.40.0",
+  ]
+  vllm_073 = [
+      "vllm==v0.7.3",
+      "ray[serve]==2.40.0",
+  ]
+  # SGLang for DS R1
+  sglang_043 = [
+      "sglang[all]==0.4.3.post4",
+      "sglang-router",
+  ]
+  vllm_083 = [
+      "vllm==v0.8.3",
+      "ray[serve]>=2.43.0",
+      "torch>=2.6.0",
+  ]
+
+[project.scripts]
+matrix="matrix.cli:main"
+
+[tool.black]
+exclude = '.*_pb2.*py$'
+
+[tool.isort]
+profile = "black"
+skip_gitignore = true
+skip_glob = ["website/*", "*.pyx", "*_pb2*py"]
+
+[tool.mypy]
+show_error_codes = true
+check_untyped_defs = true
+ignore_missing_imports = true
+implicit_optional = true
+implicit_reexport = true
+exclude = '.*_pb2.*py$'
+
+files = [
+  "matrix/"
+]
+
+[tool.flit.sdist]
+exclude = [".generated_deployment.yaml"]
