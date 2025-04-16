@@ -30,7 +30,7 @@ Matrix is designed for scalable LLM inference on Slurm. Here is a feature compar
 ```
 conda create --name matrix python=3.10
 conda activate matrix
-pip install 'git+ssh://git@github.com/facebookresearch/matrix.git#egg=matrix[vllm_073]'
+pip install 'git+ssh://git@github.com/facebookresearch/matrix.git#egg=matrix[vllm_083]'
 ```
 
 - Launch ray cluster
@@ -81,19 +81,8 @@ matrix deploy_applications --action add --applications "[{'model_name': 'meta-ll
 ```
 matrix deploy_applications --applications ''
 ```
-### Adjust Context Length
-The prompt token length + max_tokens <= max-model-len.
-```
-matrix deploy_applications --applications "[{'name': '405B', 'model_name': '/path_to_dir/Llama-3.1-405B-Instruct', 'min_replica': 1, 'model_size': '405B', 'pipeline-parallel-size': 4, 'max-model-len': 30960}]"
-```
-
-405B recommended parameters
-| Context | Parallel |
-| ------- | -------- |
-| 10k | 2 |
-| 30k | 4 |
-| 60k | 6 |
-| 128k | 10 |
+### Adjust Model Args
+vLLM Engine [Aruments](https://docs.vllm.ai/en/latest/serving/engine_args.html) can be specified in the deploy_applications arguments. The default values for popular models are in this [config](matrix/app_server/llm/llm_config.py). To scale the deployment, `min_replia` and `max_replica` can be added based on num of workers.
 
 ### OpenAI Azure Model
 - Note: no GPU is required, in start_workers, can add `--slurm "{'gpus_per_node': 0}"`
@@ -110,11 +99,12 @@ matrix deploy_applications --applications "[{'app_type': 'gemini', 'name': "gemi
 ```
 
 ### Deepseek R1
+vLLM >=0.8.3 supports DS R1. An alternative backend is sglang.
 ```
 // install sglang
-pip install 'git+ssh://git@github.com/facebookresearch/matrix.git#egg=matrix[sglang_043]'
+pip install 'git+ssh://git@github.com/facebookresearch/matrix.git#egg=matrix[sglang_045]'
 
-matrix deploy_applications --applications "[{'model_name': 'deepseek-ai/DeepSeek-R1', 'min_replica': 2, 'app_type': sglang_llm}]"
+matrix deploy_applications --applications "[{'model_name': 'deepseek-ai/DeepSeek-R1', 'pipeline-parallel-size': 2, 'app_type': sglang_llm}]"
 ```
 ### Llama 4
 ```
@@ -158,15 +148,25 @@ There are two format for the jsonl input files:
 ### Inference API
 ```
 from matrix import Cli
-from matrix.app_server.llm import query_llm
+from matrix.client import query_llm
 
 metadata = Cli().get_app_metadata(app_name="8B")
+
+# async call
 await query_llm.make_request(
   url=metadata["endpoints"]["head"],
   model=metadata["model_name"],
   app_name=metadata["name"],
   data={"messages": [{"role": "user", "content": "hi"}]},
 ))
+
+# batch inference
+query_llm.batch_requests(
+  url=metadata["endpoints"]["head"],
+  model=metadata["model_name"],
+  app_name=metadata["name"],
+  requests=[{"messages": [{"role": "user", "content": "hi"}]}],
+)
 ```
 
 ## Code Execution
@@ -183,11 +183,11 @@ matrix check_health --app_name code
 ## Data Pipelines
 - minhash dedup
 ```
-python matrix/data_pipeline/quality/dedup_minhash.py ray_head:client_server_port input.jsonl output_dir working_dir
+python  -m matrix.data_pipeline.quality.dedup_minhash $ray_head:$client_server_port input.jsonl output_dir working_dir --text_key problem
 ```
 - multilabel classification
 ```
-python matrix/data_pipeline/classification/multi_label_classification.py ray_head:client_server_port  cardiffnlp/twitter-roberta-base-emotion-multilabel-latest input.jsonl output_dir --num_gpus 48 --text_key question --threshold_fname ""
+python -m matrix.data_pipeline.classification.multi_label_classification $ray_head:$client_server_port  cardiffnlp/twitter-roberta-base-emotion-multilabel-latest input.jsonl output_dir --num_gpus 8 --text_key question --threshold_fname ""
 ```
 
 ## Contributing
@@ -201,7 +201,7 @@ If you use matrix in your research and wish to refer to it, please use the
 following BibTeX entry.
 
 ```
-@software{wang2025matrix,
+@software{matrix2025,
   author = {Dong Wang and Yang Li and Ansong Ni and Youssef Emad and Xinjie Lei and Ruta Desai and Asli Celikyilmaz and Daniel Li},
   title = {Matrix},
   url = {http://github.com/facebookresearch/matrix},
@@ -212,3 +212,7 @@ following BibTeX entry.
 
 ## License
 This project is MIT licensed, as found in the [LICENSE](LICENSE) file.
+
+
+## Acknowledgement
+We gratefully acknowledge the [Ray](https://github.com/ray-project/ray) and [vLLM](https://github.com/vllm-project/vllm) team for initial Ray Serve integration with vLLM.
