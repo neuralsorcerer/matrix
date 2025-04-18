@@ -208,8 +208,8 @@ following BibTeX entry.
 
 ```
 @software{matrix2025,
-  author = {Dong Wang and Yang Li and Ansong Ni and Youssef Emad and Xinjie Lei and Ruta Desai and Asli Celikyilmaz and Daniel Li},
-  title = {Matrix},
+  author = {Dong Wang and Yang Li and Ansong Ni and Youssef Emad and Xinjie Lei and Ruta Desai and Asli Celikyilmaz and Ramya Raghavendra and Leo Huang and Daniel Li},
+  title = {Matrix: Multi-Agent daTa geneRation Infra and eXperimentation},
   url = {http://github.com/facebookresearch/matrix},
   year = {2025},
 }
