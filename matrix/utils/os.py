@@ -10,11 +10,15 @@ import signal
 import socket
 import subprocess
 import threading
+import time
+import traceback
 import typing as tp
 import uuid
+from collections import deque
 from contextlib import closing
 from pathlib import Path
 
+import portalocker
 import psutil
 import submitit
 
@@ -99,9 +103,19 @@ def create_symlinks(
     (destination / f"{job_category}.out").symlink_to(job_paths.stdout)
 
 
-def run_and_stream(logger, command):
+def run_and_stream(logging_config, command, blocking=False):
     """Runs a subprocess, streams stdout/stderr in realtime, and ensures cleanup on termination."""
-    logger.info(f"launch sglang: {command}")
+    remote = logging_config.get("remote", False)
+    logger = logging_config["logger"]
+    pid = None
+
+    def log(str):
+        if remote:
+            logger.log.remote(f"[{pid}]" + str)
+        else:
+            logger.info(str)
+
+    log(f"launch: {command}")
 
     """Runs a subprocess, streams stdout/stderr, and ensures cleanup."""
     process = subprocess.Popen(
@@ -112,26 +126,66 @@ def run_and_stream(logger, command):
         text=True,
         preexec_fn=os.setsid,  # Run in a separate process group
     )
+    pid = process.pid
+
+    terminate_flag = threading.Event()
+    stdout_buffer: tp.Deque[str] = deque(maxlen=10)
 
     def stream_output():
         """Reads and logs the subprocess output in real-time."""
         try:
-            for line in iter(process.stdout.readline, ""):  # type: ignore[union-attr]
-                print(line.strip())  # Replace with logger.info() if needed
+            while not terminate_flag.is_set() and process.poll() is None:
+                if process.stdout:
+                    ready_to_read, _, _ = select.select([process.stdout], [], [], 0.1)
+                    if ready_to_read:
+                        line = process.stdout.readline()
+                        if line:
+                            log(line.strip())
+                            stdout_buffer.append(line)
         except Exception as e:
-            print(f"Error reading subprocess output: {e}")
+            log(f"Error reading subprocess output: {e}")
         finally:
-            process.stdout.close()  # type: ignore[union-attr]
-            process.wait()
-
-            if process.returncode != 0:
-                print(f"Subprocess exited with error code {process.returncode}")
+            # Make sure to read any remaining output
+            if process.stdout:
+                for line in process.stdout:
+                    stdout_buffer.append(line)
+                    log(line.strip())
+                process.stdout.close()
 
     # Start log streaming in a separate thread to avoid blocking
-    threading.Thread(target=stream_output, daemon=True).start()
+    output_thread = threading.Thread(target=stream_output, daemon=True)
+    output_thread.start()
 
-    logger.info(f"Launch proces {process.pid} with group {os.getpgid(process.pid)}")
-    return process
+    log(f"Launch proces {pid} with group {os.getpgid(pid)}")
+    if not blocking:
+        return process
+    else:
+        try:
+            while True:
+                exit_code = process.poll()
+                if exit_code is not None:
+                    print(f"Process finished with code {exit_code}")
+                    break
+                time.sleep(1)
+            log(f"Process exited with code {exit_code}")
+            stdout_content = "".join(stdout_buffer)
+            return {
+                "success": exit_code == 0,
+                "exit_code": exit_code,
+                "stdout": stdout_content,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "stdout": stdout_content,
+            }
+        finally:
+            terminate_flag.set()
+            output_thread.join(timeout=1.0)
+            stop_process(process)
+            log(f"Subprocess killed")
 
 
 def stop_process(process):
@@ -164,3 +218,18 @@ def run_subprocess(command: tp.List[str]) -> bool:
             return False
     except Exception as e:
         return False
+
+
+def lock_file(filepath, mode, timeout=10, poll_interval=0.1):
+    start_time = time.time()
+    while True:
+        try:
+            return portalocker.Lock(
+                filepath, mode, flags=portalocker.LockFlags.EXCLUSIVE
+            )
+        except portalocker.exceptions.AlreadyLocked:
+            if (time.time() - start_time) >= timeout:
+                raise TimeoutError(
+                    f"Could not acquire lock for {filepath} within {timeout} seconds."
+                )
+            time.sleep(poll_interval)

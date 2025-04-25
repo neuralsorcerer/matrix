@@ -486,8 +486,8 @@ async def main(
     url: tp.Union[str, tp.Callable[[], tp.Awaitable[str]]],
     output_file: str,
     input_jsonls: str,
-    app_name="",
-    model="meta-llama/Meta-Llama-3.1-405B-Instruct",
+    app_name: str,
+    model: str,
     batch_size=32,
     seed=42,
     temperature=0.7,
@@ -499,7 +499,7 @@ async def main(
     messages_key="request.messages",
     system_prompt="",
     timeout_secs=600,
-):
+) -> tp.Dict[str, int]:
     """Send jsonl llama3 instruct prompt for inference and save both the request and response as jsonl.
     params:
     url: Llama openai endpoint, eg http://hostname:8000/405B/v1
@@ -531,7 +531,7 @@ async def main(
     input_files = glob.glob(input_jsonls)
     if not input_files:
         logger.error(f"No input files found matching pattern: {input_jsonls}")
-        return
+        return {}
 
     lines = load_from_jsonl(
         tuple(input_files),
@@ -595,6 +595,7 @@ async def main(
         await save_outputs(flush=True)
     pbar.close()
     logger.info(f"Stats of the request: {stats}")
+    return stats
 
 
 if __name__ == "__main__":
