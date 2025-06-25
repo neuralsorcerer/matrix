@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import asyncio
+import getpass
 import logging
 import os
 from pathlib import Path
@@ -89,6 +90,8 @@ class CheckpointEvalRequest(BaseModel):
     model_size: str = "8B"
     tokenizer: str = "meta-llama/Llama-3.1-8B-Instruct"
     use_ray_data: bool = True
+    sampling_params: Dict[str, Any] | None = None
+    skip_generation: bool = False
 
 
 class BenchmarkStatus(BaseModel):
@@ -97,6 +100,7 @@ class BenchmarkStatus(BaseModel):
     pending: int
     metric_values: List[float]
     metric_avg: float
+    metric_stderr: float
 
 
 class CheckpointEvalMetrics(BaseModel):
@@ -346,6 +350,12 @@ async def evaluate_checkpoint(
             app_name = request.job_id.replace("/", "-")
         else:
             app_name = "-".join(request.checkpoint_dir.split("/")[-3:])
+        job_id = request.job_id or app_name
+        if request.skip_generation:
+            job_ids = job_api.list()
+            if job_id in job_ids:
+                logger.info(f"Delete the existing job: {job_id}")
+                job_api.delete(job_id)
 
         task_definitions = []
         cluster_info = cli.cluster.cluster_info()
@@ -369,6 +379,8 @@ async def evaluate_checkpoint(
                     request.use_ray_data,
                     get_ray_address(cluster_info),
                     request.tokenizer,
+                    request.sampling_params,
+                    request.skip_generation,
                 )
                 task_definitions.append(
                     {
@@ -385,7 +397,7 @@ async def evaluate_checkpoint(
                 )
 
         job_def = {
-            "job_id": request.job_id or app_name,
+            "job_id": job_id,
             "applications": (
                 [
                     {
@@ -405,6 +417,7 @@ async def evaluate_checkpoint(
             "timeout": request.timeout,
             "max_concurrent_tasks": request.max_concurrent_tasks,
         }
+        logger.info(f"Submitting checkpoint evaluation job: {job_def}")
 
         job_id = job_api.submit(job_def)
         logger.info(f"Submitted checkpoint evaluation job: {job_id}")
@@ -474,8 +487,16 @@ async def health_check():
     return {"status": "ok"}
 
 
-def main(cluster_id: str, matrix_dir: str | None = None, port: int | None = 6289):
+def main(
+    cluster_id: str | None = None,
+    matrix_dir: str | None = None,
+    port: int | None = 6289,
+):
     global global_cluster_id, global_matrix_dir
+    cluster_id = (
+        cluster_id or os.getenv("MATRIX_CLUSTER_ID") or (getpass.getuser() + "_cluster")
+    )
+
     global_cluster_id = cluster_id
     if matrix_dir is not None:
         global_matrix_dir = matrix_dir
