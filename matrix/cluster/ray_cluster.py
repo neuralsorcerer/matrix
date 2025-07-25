@@ -23,6 +23,7 @@ from matrix.common.cluster_info import ClusterInfo
 from matrix.utils.basics import convert_to_json_compatible
 from matrix.utils.os import (
     create_symlinks,
+    is_port_open,
     kill_proc_tree,
     run_subprocess,
 )
@@ -58,10 +59,20 @@ class RayCluster:
         self.cluster_id = cluster_id
         self.matrix_dir = matrix_dir
         print(f"cluster {self.cluster_id}")
-        self._cluster_dir.mkdir(parents=True, exist_ok=True)
-        (self._cluster_dir / "jobs").mkdir(parents=True, exist_ok=True)
+        self.create_directory()
+        print(f"logging to {self._log_dir.resolve()}")
 
         print(f"logging to {self._log_dir.resolve()}")
+
+    def create_directory(self):
+        """
+        Creates the directory structure for the Ray cluster.
+
+        This method ensures that the necessary directories for storing cluster data
+        and logs are created.
+        """
+        self._cluster_dir.mkdir(parents=True, exist_ok=True)
+        (self._cluster_dir / "jobs").mkdir(parents=True, exist_ok=True)
 
     @property
     def _cluster_dir(self) -> Path:
@@ -192,6 +203,16 @@ class RayCluster:
         requirements = slurm or local or {}
         executor = "slurm" if slurm else "local"
 
+        if self._cluster_json.exists():
+            cluster = self.cluster_info()
+            assert cluster is not None, "Head is not ready"
+            if not is_port_open(cluster.hostname, cluster.port):
+                print(
+                    f"Head node {cluster.hostname}:{cluster.port} is not reachable, stopping cluster first"
+                )
+                self.stop()
+                self.create_directory()
+
         if force_new_head:
             # remove existing head.json
             if self._cluster_json.exists():
@@ -247,7 +268,7 @@ class RayCluster:
                         break
 
             if head_start_timeout:
-                print(f"Fairray did not detect head started, check manually!")
+                print(f"head may not have started, check manually!")
             else:
                 print(f"Job {head_job.job_id} has started.")
 
@@ -323,8 +344,11 @@ class RayCluster:
 
         cluster_info = self.cluster_info()
         assert cluster_info is not None, "Head is not ready"
-        init_ray_if_necessary(cluster_info)
-        ray.shutdown()
+        try:
+            init_ray_if_necessary(cluster_info)
+            ray.shutdown()
+        except Exception as e:
+            print(f"Ignore failures when shutdowning Ray: {e}")
 
         job_ids = [f.stem for f in (self._cluster_dir / "jobs").iterdir()]
         root_ids = list(set([i.split("_", maxsplit=2)[0] for i in job_ids]))
