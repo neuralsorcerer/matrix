@@ -17,10 +17,9 @@ from pathlib import Path
 import fire
 
 from matrix.app_server import app_api
-from matrix.client import query_llm
 from matrix.cluster.ray_cluster import RayCluster
 from matrix.utils.basics import convert_to_json_compatible
-from matrix.utils.os import run_and_stream, run_subprocess
+from matrix.utils.os import run_and_stream, run_async, run_subprocess
 
 
 class Cli:
@@ -315,6 +314,22 @@ class Cli:
                     url,
                 ]
                 return run_subprocess(curl_command)
+            elif "container" in deployment_name.lower():
+
+                async def run_container():
+                    from matrix.client.container_client import (
+                        ContainerClient,
+                        ManagedContainer,
+                    )
+
+                    client = ContainerClient(metadata["endpoints"]["head"])
+                    async with ManagedContainer(
+                        client, image="docker://ubuntu:22.04"
+                    ) as container_id:
+                        assert container_id is not None
+                        return await client.execute(container_id, "echo Hello World")
+
+                return run_async(run_container())
             else:
                 prompt = prompt or "What is 2+4=?"
                 data_payload = {
@@ -341,6 +356,8 @@ class Cli:
                     ]
                     return run_subprocess(curl_command)
                 else:
+                    from matrix.client import query_llm
+
                     if not use_chat:
                         data_payload = {"prompt": prompt}
                     response = query_llm.batch_requests(

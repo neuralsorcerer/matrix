@@ -61,6 +61,7 @@ non_model_params = [
     "endpoint_name",
     "anthropic_version",
     "thinking_budget",
+    "num_containers_per_replica",
 ]
 
 vllm_app_template = """
@@ -187,6 +188,20 @@ other_app_template = """
       target_ongoing_requests: 1
       min_replicas: {{ app.min_replica }}
       max_replicas: {{ app.max_replica }}
+  {% elif app.app_type == 'container' %}
+- name: {{ app.name }}
+  route_prefix: /{{ app.name }}
+  import_path: matrix.app_server.container.container_deployment:build_app
+  runtime_env: {}
+  args:
+    num_containers_per_replica: {{ app.num_containers_per_replica }}
+  deployments:
+  - name: ContainerDeployment
+    max_ongoing_requests: 32
+    autoscaling_config:
+      target_ongoing_requests: 32
+      min_replicas: {{ app.min_replica }}
+      max_replicas: {{ app.max_replica }}
 {% elif app.app_type == 'hello' %}
 - name: {{ app.name }}
   route_prefix: /{{ app.name }}
@@ -229,6 +244,7 @@ def get_app_type(app):
     assert "deployments" in app
     deployment = app["deployments"][0]["name"]
     deploy_type = {
+        "ContainerDeployment": "container",
         "CodeExecutionApp": "code",
         "GrpcDeployment": "llm",
         "VLLMDeployment": "llm",
@@ -327,6 +343,7 @@ def get_yaml_for_deployment(
                 "llm",
                 "sglang_llm",
                 "code",
+                "container",
                 "hello",
                 "openai",
                 "metagen",
@@ -362,8 +379,16 @@ def get_yaml_for_deployment(
                 if "name" not in app:
                     app["name"] = "code"
                 yaml_str += Template(other_app_template).render(app=app)
-            elif app_type == "openai":
+            elif app_type == "container":
                 default_params: Dict[str, Union[str, int]] = {
+                    "name": "container",
+                    "max_ongoing_requests": 32,
+                    "num_containers_per_replica": 32,
+                }
+                app.update({k: v for k, v in default_params.items() if k not in app})
+                yaml_str += Template(other_app_template).render(app=app)
+            elif app_type == "openai":
+                default_params = {
                     "name": "openai",
                     "model_name": "gpt-4o",
                     "max_ongoing_requests": 100,
