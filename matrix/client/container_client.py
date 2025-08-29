@@ -17,14 +17,6 @@ from matrix.utils.http import fetch_url, post_url
 logger = logging.getLogger(__name__)
 
 
-class ContainerClientError(Exception):
-    """Custom exception for container client errors."""
-
-    def __init__(self, message: str, status_code: Optional[int] = None):
-        super().__init__(message)
-        self.status_code = status_code
-
-
 class ContainerClient:
     """Client for interacting with the ContainerDeployment HTTP server."""
 
@@ -38,45 +30,51 @@ class ContainerClient:
         self.base_url = base_url.rstrip("/")
         self.containers: list[str] = []
 
-    def _parse_response(self, status: Optional[int], content: str) -> Dict:
-        """Parse response content and handle errors."""
+    async def _handle_response(
+        self, status: Optional[int], content: str
+    ) -> Dict[str, Any]:
+        """Handle HTTP response and convert to standardized format."""
         if status is None:
-            raise ContainerClientError(f"Request failed: {content}")
-
-        if status >= 400:
-            try:
-                error_data = json.loads(content)
-                detail = error_data.get("detail", content)
-            except json.JSONDecodeError:
-                detail = content
-            raise ContainerClientError(f"HTTP {status}: {detail}", status_code=status)
+            # Network or connection error
+            return {"error": content}
 
         try:
-            return json.loads(content)
+            # Try to parse JSON response
+            response_data = json.loads(content)
+
+            # Check if it's an HTTP error status
+            if status >= 400:
+                if isinstance(response_data, dict) and "detail" in response_data:
+                    return {"error": response_data["detail"]}
+                else:
+                    return {"error": f"HTTP {status}: {content}"}
+
+            return response_data
+
         except json.JSONDecodeError:
-            raise ContainerClientError(f"Invalid JSON response: {content}")
+            if status >= 400:
+                return {"error": f"HTTP {status}: {content}"}
+            else:
+                return {"error": f"Invalid JSON response: {content}"}
 
     async def acquire_container(
         self,
         image: str,
         executable: str = "apptainer",
         run_args: Optional[List[str]] = None,
-        timeout_s: float = 1800.0,
-    ) -> str | None:
+        timeout: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Acquire a container with the specified image.
+        Acquire a new container.
 
         Args:
             image: Container image (e.g., "docker://ubuntu:22.04")
             executable: Container runtime executable (default: "apptainer")
-            run_args: Additional runtime arguments (default: [])
-            timeout_s: Timeout in seconds to wait for available container (default: 5.0)
+            run_args: Additional arguments for container run (default: [])
+            timeout: Timeout for container acquisition
 
         Returns:
-            Container ID string
-
-        Raises:
-            ContainerClientError: If acquisition fails
+            Dict with either {"container_id": "..."} or {"error": "..."}
         """
         if run_args is None:
             run_args = []
@@ -85,41 +83,33 @@ class ContainerClient:
             "image": image,
             "executable": executable,
             "run_args": run_args,
-            "timeout_s": timeout_s,
+            "timeout": timeout,
         }
 
-        url = f"{self.base_url}/acquire"
+        session_timeout = aiohttp.ClientTimeout(total=timeout + 5) if timeout else None
+        async with aiohttp.ClientSession(timeout=session_timeout) as session:
+            status, content = await post_url(
+                session, f"{self.base_url}/acquire", payload
+            )
+            return await self._handle_response(status, content)
 
-        async with aiohttp.ClientSession() as session:
-            status, content = await post_url(session, url, payload)
-            response = self._parse_response(status, content)
-            container_id = response.get("container_id")
-            if container_id:
-                self.containers.append(container_id)
-            return container_id
-
-    async def release_container(self, container_id: str) -> Dict:
+    async def release_container(self, container_id: str) -> Dict[str, Any]:
         """
-        Release a container by its ID.
+        Release a container.
 
         Args:
             container_id: ID of the container to release
 
         Returns:
-            Response dictionary with status and container_id
-
-        Raises:
-            ContainerClientError: If release fails
+            Dict with either {"container_id": "..."} or {"error": "..."}
         """
         payload = {"container_id": container_id}
-        url = f"{self.base_url}/release"
 
         async with aiohttp.ClientSession() as session:
-            status, content = await post_url(session, url, payload)
-            result = self._parse_response(status, content)
-            if container_id in self.containers:
-                self.containers.remove(container_id)
-            return result
+            status, content = await post_url(
+                session, f"{self.base_url}/release", payload
+            )
+            return await self._handle_response(status, content)
 
     async def execute(
         self,
@@ -128,25 +118,23 @@ class ContainerClient:
         cwd: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
         forward_env: Optional[List[str]] = None,
-    ) -> Dict:
+        timeout: int = 30,
+    ) -> Dict[str, Any]:
         """
-        Execute a command in the specified container.
+        Execute a command in a container.
 
         Args:
-            container_id: ID of the container to execute command in
+            container_id: ID of the container
             cmd: Command to execute
-            cwd: Working directory for the command (optional)
-            env: Environment variables to set (optional)
-            forward_env: List of environment variables to forward from host (optional)
+            cwd: Working directory for command execution
+            env: Environment variables to set
+            forward_env: Environment variables to forward from host
+            timeout: Command timeout in seconds (default: 30)
 
         Returns:
-            Execution result dictionary
-
-        Raises:
-            ContainerClientError: If execution fails
+            Dict with either {"returncode": int, "output": str} or {"error": "..."}
         """
-        payload: Dict[str, Any] = {"container_id": container_id, "cmd": cmd}
-
+        payload = {"container_id": container_id, "cmd": cmd, "timeout": timeout}
         if cwd is not None:
             payload["cwd"] = cwd
         if env is not None:
@@ -154,25 +142,35 @@ class ContainerClient:
         if forward_env is not None:
             payload["forward_env"] = forward_env
 
-        url = f"{self.base_url}/execute"
+        session_timeout = aiohttp.ClientTimeout(total=timeout + 5) if timeout else None
+        async with aiohttp.ClientSession(timeout=session_timeout) as session:
+            status, content = await post_url(
+                session, f"{self.base_url}/execute", payload
+            )
+            return await self._handle_response(status, content)
 
-        async with aiohttp.ClientSession() as session:
-            status, content = await post_url(session, url, payload)
-            return self._parse_response(status, content)
-
-    async def get_status(self) -> Dict:
+    async def get_status(self) -> Dict[str, Any]:
         """
-        Get the current status of the container deployment.
+        Get status of all containers and actors.
 
         Returns:
-            Status information dictionary
-
-        Raises:
-            ContainerClientError: If status request fails
+            Dict with either {"actors": {...}, "containers": {...}} or {"error": "..."}
         """
-        url = f"{self.base_url}/status"
-        status, content = await fetch_url(url)
-        return self._parse_response(status, content)
+        status, content = await fetch_url(f"{self.base_url}/status")
+        return await self._handle_response(status, content)
+
+    async def release_all_containers(self) -> Dict[str, Any]:
+        """
+        Release all containers.
+
+        Returns:
+            Dict with either {"container_ids": []} or {"error": "..."}
+        """
+        async with aiohttp.ClientSession() as session:
+            status, content = await post_url(
+                session, f"{self.base_url}/release_all", {}
+            )
+            return await self._handle_response(status, content)
 
     async def __aenter__(self):
         return self
@@ -181,7 +179,7 @@ class ContainerClient:
         if self.containers:
             print(f"Releasing containers {self.containers}")
             tasks = [self.release_container(cid) for cid in self.containers]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=False)
         return False  # re-raise exception if one happened
 
 
@@ -195,33 +193,46 @@ class ManagedContainer:
         image: str,
         executable: str = "apptainer",
         run_args: Optional[List[str]] = None,
-        timeout_s: float = 5.0,
+        timeout: int = 300,
     ):
         self.client = client
         self.image = image
         self.executable = executable
         self.run_args = run_args or []
-        self.timeout_s = timeout_s
+        self.timeout = timeout
         self.container_id: Optional[str] = None
 
-    async def __aenter__(self) -> str | None:
+    async def __aenter__(self) -> "ManagedContainer":
         """Acquire container on entering context."""
-        self.container_id = await self.client.acquire_container(
+        result = await self.client.acquire_container(
             image=self.image,
             executable=self.executable,
             run_args=self.run_args,
-            timeout_s=self.timeout_s,
+            timeout=self.timeout,
         )
-        return self.container_id
+        if "error" in result:
+            raise Exception(f"Failed to acquire container: {result['error']}")
+        self.container_id = result["container_id"]
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Release container on exiting context."""
         if self.container_id:
-            try:
-                await self.client.release_container(self.container_id)
-            except ContainerClientError:
-                # Log error but don't raise - we're already exiting
-                pass
+            await self.client.release_container(self.container_id)
+            self.container_id = None
+
+    async def execute(
+        self,
+        cmd: str,
+        cwd: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+        forward_env: Optional[List[str]] = None,
+        timeout: int = 30,
+    ) -> Dict[str, Any]:
+        assert self.container_id is not None, "Container not acquired yet"
+        return await self.client.execute(
+            self.container_id, cmd, cwd, env, forward_env, timeout
+        )
 
 
 if __name__ == "__main__":
@@ -241,7 +252,10 @@ if __name__ == "__main__":
                     for tag in tags
                 ],
             )
-            containers = [cid for cid in containers if not isinstance(cid, Exception)]
+            print(containers)
+            containers = [
+                cid["container_id"] for cid in containers if "error" not in cid
+            ]
             await batch_requests_async(
                 client.execute,
                 [
