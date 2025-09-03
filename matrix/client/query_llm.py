@@ -65,6 +65,50 @@ def convert_llama_instruct_text(
     return messages
 
 
+def _get_request(key: str, data: tp.Dict[str, tp.Any]) -> tp.Optional[tp.Any]:
+    keys = key.split(".")
+    current_data = data
+    for k in keys:
+        if isinstance(current_data, dict) and k in current_data:
+            current_data = current_data[k]
+        else:
+            return None
+    return current_data
+
+
+def _get_metadata_key(text_key: str) -> str:
+    parts = text_key.split(".")
+    parts[-1] = "metadata"
+    return ".".join(parts)
+
+
+def _prepare_request(
+    sample: tp.Dict[str, tp.Any],
+    text_key: str,
+    messages_key: str,
+    system_prompt: str,
+    default_metadata: tp.Dict[str, tp.Any],
+) -> tp.Dict[str, tp.Any]:
+    text = _get_request(text_key, sample)
+    if text:
+        messages = convert_llama_instruct_text(text)
+        metadata = _get_request(_get_metadata_key(text_key), sample)
+    else:
+        messages = _get_request(messages_key, sample)  # type: ignore
+        assert messages, f"either {text_key} or {messages_key} should exist"
+        metadata = _get_request(_get_metadata_key(messages_key), sample)
+
+    if system_prompt:
+        if messages[0]["role"] == "system":
+            messages[0]["content"] = system_prompt
+        else:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+
+    if metadata is None:
+        metadata = default_metadata
+    return {"metadata": metadata, "messages": messages}
+
+
 def load_from_jsonl(
     input_files: tp.Tuple[str, ...],
     text_key: str,
@@ -72,47 +116,18 @@ def load_from_jsonl(
     system_prompt: str,
 ) -> tp.List[tp.Dict[str, tp.Any]]:
 
-    def get_request(key: str, data: tp.Dict[str, tp.Any]) -> tp.Optional[tp.Any]:
-        keys = key.split(".")
-        current_data = data
-        for k in keys:
-            if isinstance(current_data, dict) and k in current_data:
-                current_data = current_data[k]
-            else:
-                return None
-        return current_data
-
-    def get_metadata_key(text_key: str) -> str:
-        parts = text_key.split(".")
-        parts[-1] = "metadata"
-        return ".".join(parts)
-
     def load_json_line(
-        file_name: str, line: str, line_number: int, system_prompt: str
+        file_name: str, line: str, line_number: int
     ) -> tp.Dict[str, tp.Any]:
         try:
             data = json.loads(line)
-            text = get_request(text_key, data)
-            if text:
-                messages = convert_llama_instruct_text(text)
-                metadata = get_request(get_metadata_key(text_key), data)
-            else:
-                messages = get_request(messages_key, data)  # type: ignore
-                assert messages, f"either {text_key} or {messages_key} should exist"
-                metadata = get_request(get_metadata_key(messages_key), data)
-
-            if system_prompt:
-                if messages[0]["role"] == "system":
-                    messages[0]["content"] = system_prompt
-                else:
-                    messages.insert(0, {"role": "system", "content": system_prompt})
-
-            if metadata is None:
-                metadata = {"filename": file_name, "line": line_number}
-            return {
-                "metadata": metadata,
-                "messages": messages,
-            }
+            return _prepare_request(
+                data,
+                text_key,
+                messages_key,
+                system_prompt,
+                {"filename": file_name, "line": line_number},
+            )
         except Exception as e:
             raise ValueError(f"Error in line {line_number}\n{line} of {file_name}: {e}")
 
@@ -126,13 +141,38 @@ def load_from_jsonl(
             max_length = 0
             num_lines = 0
             for num_lines, line in enumerate(f, start=1):
-                item = load_json_line(file_name, line, num_lines, system_prompt)
+                item = load_json_line(file_name, line, num_lines)
                 max_length = max(get_text_length(item["messages"]), max_length)
                 # Add metadata to the dictionary
                 data.append(item)
             logger.info(
                 f"Loaded {num_lines} lines from {file_name}, max text length {max_length}, estimated max token {int(max_length / CHAR_PER_TOKEN)}"
             )
+    return data
+
+
+def load_from_hf_dataset(
+    dataset_name: str,
+    split: str,
+    text_key: str,
+    messages_key: str,
+    system_prompt: str,
+) -> tp.List[tp.Dict[str, tp.Any]]:
+    from datasets import load_dataset
+
+    dataset = load_dataset(dataset_name, split=split)
+    data = []
+    for idx, sample in enumerate(dataset):
+        data.append(
+            _prepare_request(
+                sample,
+                text_key,
+                messages_key,
+                system_prompt,
+                {"index": idx},
+            )
+        )
+    logger.info(f"Loaded {len(data)} samples from {dataset_name} split {split}")
     return data
 
 
@@ -617,9 +657,9 @@ def batch_requests(
 async def main(
     url: tp.Union[str, tp.Callable[[], tp.Awaitable[str]]],
     output_file: str,
-    input_jsonls: str,
-    app_name: str,
-    model: str,
+    input_jsonls: str | None = None,
+    app_name: str = "",
+    model: str = "",
     batch_size=32,
     seed=42,
     temperature=0.7,
@@ -632,6 +672,8 @@ async def main(
     system_prompt="",
     timeout_secs=600,
     batch_mode=False,
+    input_hf_dataset: str | None = None,
+    hf_dataset_split: str = "train",
 ) -> tp.Dict[str, int]:
     """Send jsonl llama3 instruct prompt for inference and save both the request and response as jsonl.
     params:
@@ -640,6 +682,8 @@ async def main(
     input_jsonls: variable num of input jsonl files, each line is a json with two formats
         1. {text_key: prompt} if text_key is found, prompt is raw text
         2. {messages_key: Iterable[ChatCompletionMessageParam]} if messages_key is found.
+    input_hf_dataset: name of a Hugging Face dataset to load directly.
+    hf_dataset_split: dataset split to use when loading from Hugging Face.
     model: the huggingface model name or a directory.
     batch_size: max number of concurrent requests.
     seed: seed.
@@ -661,17 +705,25 @@ async def main(
         os.makedirs(save_dir, exist_ok=True)
     if os.path.exists(output_file):
         logger.warning(f"Output file '{output_file}' already exists, overwriting...")
-    input_files = glob.glob(input_jsonls)
-    if not input_files:
-        logger.error(f"No input files found matching pattern: {input_jsonls}")
-        return {}
-
-    lines = load_from_jsonl(
-        tuple(input_files),
-        text_key,
-        messages_key,
-        system_prompt=system_prompt,
-    )
+    if input_hf_dataset:
+        lines = load_from_hf_dataset(
+            input_hf_dataset,
+            hf_dataset_split,
+            text_key,
+            messages_key,
+            system_prompt=system_prompt,
+        )
+    else:
+        input_files = glob.glob(input_jsonls or "")
+        if not input_files:
+            logger.error(f"No input files found matching pattern: {input_jsonls}")
+            return {}
+        lines = load_from_jsonl(
+            tuple(input_files),
+            text_key,
+            messages_key,
+            system_prompt=system_prompt,
+        )
     stats = {"success": 0, "total": 0, "sum_latency": 0}
     if batch_mode:
         outputs = await batch_requests_async(
