@@ -20,6 +20,13 @@ import tqdm
 from fire import Fire
 from grpc import aio as grpc_aio
 from openai import APIConnectionError, APITimeoutError, RateLimitError
+from openai._types import NOT_GIVEN, NotGiven
+from openai.types.chat.chat_completion_tool_choice_option_param import (
+    ChatCompletionToolChoiceOptionParam,
+)
+from openai.types.chat.chat_completion_tool_union_param import (
+    ChatCompletionToolUnionParam,
+)
 
 from matrix.app_server.llm import openai_pb2, openai_pb2_grpc
 from matrix.client.client_utils import get_an_endpoint_url, save_to_jsonl
@@ -218,6 +225,8 @@ async def make_request(
     backoff_factor: int = 2,
     multiplexed_model_id: str = "",
     timeout_secs: int = 600,
+    tools: tp.Iterable[ChatCompletionToolUnionParam] | NotGiven = NOT_GIVEN,
+    tool_choice: ChatCompletionToolChoiceOptionParam = "none",
     prompt_logprobs: tp.Optional[int] = None,
     endpoint_cache: tp.Optional[EndpointCache] = None,
     top_k: int = -1,
@@ -275,6 +284,8 @@ async def make_request(
                             seed=seed,
                             n=n,
                             timeout=timeout_secs,  # 10 minutes
+                            tools=tools,
+                            tool_choice=tool_choice,
                             logprobs=logprobs or top_logprobs is not None,
                             top_logprobs=top_logprobs,
                             extra_headers=extra_headers,
@@ -283,16 +294,27 @@ async def make_request(
                         result = {
                             "request": data,
                             "response": {
-                                "text": [
-                                    response.choices[i].message.content
-                                    for i in range(n)
-                                ],
                                 "finish_reason": [
                                     response.choices[i].finish_reason for i in range(n)
                                 ],
                                 "response_timestamp": time.time(),
                             },
                         }
+                        if response.choices[0].message.content:
+                            result["response"]["text"] = ([response.choices[i].message.content for i in range(n)],)  # type: ignore[attr-defined]
+                        if response.choices[0].message.tool_calls:
+                            result["response"]["tool_calls"] = [
+                                [
+                                    {
+                                        "name": tool_call.function.name,  # type: ignore[union-attr]
+                                        "arguments": tool_call.function.arguments,  # type: ignore[union-attr]
+                                    }
+                                    for tool_call in response.choices[
+                                        i
+                                    ].message.tool_calls  # type: ignore[union-attr]
+                                ]
+                                for i in range(n)
+                            ]
                         if (logprobs or top_logprobs is not None) and response.choices[
                             0
                         ].logprobs is not None:
@@ -444,6 +466,8 @@ async def make_request(
                             messages=messages,
                             top_p=top_p,
                             temperature=temperature,
+                            tool_choice=tool_choice,
+                            tools=tools if tools is not NOT_GIVEN else None,
                             n=n,
                             seed=seed,
                             max_tokens=max_tokens,
@@ -455,11 +479,25 @@ async def make_request(
                         result = {
                             "request": data,
                             "response": {
-                                "text": [response.choices[i].message.content for i in range(n)],  # type: ignore[attr-defined]
                                 "finish_reason": [response.choices[i].finish_reason for i in range(n)],  # type: ignore[attr-defined]
                                 "response_timestamp": time.time(),
                             },
                         }
+                        if response.choices[0].message.content:
+                            result["response"]["text"] = ([response.choices[i].message.content for i in range(n)],)  # type: ignore[attr-defined]
+                        if response.choices[0].message.tool_calls:
+                            result["response"]["tool_calls"] = [
+                                [
+                                    {
+                                        "name": tool_call.function.name,  # type: ignore[union-attr]
+                                        "arguments": tool_call.function.arguments,  # type: ignore[union-attr]
+                                    }
+                                    for tool_call in response.choices[
+                                        i
+                                    ].message.tool_calls  # type: ignore[union-attr]
+                                ]
+                                for i in range(n)
+                            ]
                         if (logprobs or top_logprobs is not None) and response.choices[
                             0
                         ].logprobs is not None:  # type: ignore[attr-defined]
