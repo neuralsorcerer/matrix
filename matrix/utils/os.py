@@ -275,11 +275,15 @@ def run_subprocess(command: tp.List[str]) -> bool:
 def lock_file(filepath, mode, timeout=10, poll_interval=0.1):
     start_time = time.time()
     while True:
+        lock = portalocker.Lock(
+            filepath,
+            mode,
+            flags=portalocker.LockFlags.EXCLUSIVE | portalocker.LockFlags.NON_BLOCKING,
+        )
         try:
-            return portalocker.Lock(
-                filepath, mode, flags=portalocker.LockFlags.EXCLUSIVE
-            )
-        except portalocker.exceptions.AlreadyLocked:
+            lock.acquire(fail_when_locked=True)
+            return lock
+        except portalocker.LockException:
             if (time.time() - start_time) >= timeout:
                 raise TimeoutError(
                     f"Could not acquire lock for {filepath} within {timeout} seconds."
