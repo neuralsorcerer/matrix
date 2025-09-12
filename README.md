@@ -9,9 +9,9 @@ Fast, scalable, and easy-to-use LLM-generation engine
 <div align="center">
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-fcbc2c.svg?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![Lint](https://github.com/facebookresearch/matrix/actions/workflows/lint.yml/badge.svg)](https://github.com/facebookresearch/matrix/actions/workflows/lint.yml?query=branch%3Amain)
-[![Tests](https://github.com/facebookresearch/matrix/actions/workflows/tests.yml/badge.svg)](https://github.com/facebookresearch/matrix/actions/workflows/tests.yml?query=branch%3Amain)
-[![Test Docker Image](https://github.com/facebookresearch/matrix/actions/workflows/docker_image.yml/badge.svg)](https://github.com/facebookresearch/matrix/actions/workflows/docker_image.yml?query=branch%3Amain)
+[![Lints](https://github.com/facebookresearch/matrix/actions/workflows/lints.yml/badge.svg)](https://github.com/facebookresearch/matrix/actions/workflows/lint.yml?query=branch%3Amain)
+[![Tests (Ubuntu)](https://github.com/facebookresearch/matrix/actions/workflows/tests-ubuntu.yml/badge.svg)](https://github.com/facebookresearch/matrix/actions/workflows/tests-ubuntu.yml?query=branch%3Amain)
+[![Test (Docker)](https://github.com/facebookresearch/matrix/actions/workflows/tests-docker.yml/badge.svg)](https://github.com/facebookresearch/matrix/actions/workflows/tests-docker.yml?query=branch%3Amain)
 [![License](https://img.shields.io/badge/license-MIT-3c60b1.svg?logo=opensourceinitiative&logoColor=white&style=flat-square)](./LICENSE)
 
 </div>

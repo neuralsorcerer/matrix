@@ -1,4 +1,4 @@
-name: Tests
+name: Tests (Ubuntu)
 
 on:
   # Trigger the workflow on push to master or any pull request
